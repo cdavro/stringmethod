@@ -74,7 +74,7 @@ class String2D:
                 to use for generating an initial guess of the minimum energy path (default=[]).
             spline_order: Order of spline interpolating begin, mid, and end (default=2).
             npts: Number of points between any two valuesalong the string (default=100).
-            integrator: Integration scheme to use (default='forward_euler'). Options=['forward_euler'].
+            integrator: Integration scheme to use (default='forward_euler'). Options=['forward_euler','runge_kutta_4'].
             dt: Integration timestep (default=0.1).
             tol: Convergence criterion; stop stepping if string has an RMSD < tol between
                 consecutive steps (default = max{npts^-4, 10^-10}).
@@ -113,6 +113,9 @@ class String2D:
             if integrator == "forward_euler":
                 old_string[:] = string
                 string = self.step_euler(string, dt)
+            elif integrator == "runge_kutta_4":
+                old_string[:] = string
+                string = self.step_RK4(string, dt)
             else:
                 raise ValueError("Invalid integrator")
 
@@ -155,6 +158,42 @@ class String2D:
 
         # Euler step
         string = string - dt * np.vstack([string_grad_x, string_grad_y]).T / h
+
+        return string
+    def step_RK4(self, string, dt):
+        """
+        Evolves string images in time in response to forces calculated from the energy landscape.
+
+        Args:
+            string: Array of shape (npts, 2) specifying string images at the previous timestep.
+            dt: Timestep.
+
+        Returns:
+            newstring: Array of shape (npts, 2) specifying string images after a timestep.
+        """
+        # Correct?
+        string_grad_x1 = griddata(self.grid, self.gradX.ravel(), string, method='linear')
+        string_grad_y1 = griddata(self.grid, self.gradY.ravel(), string, method='linear')
+        h1 = np.max(np.sqrt(string_grad_x1 ** 2 + string_grad_y1 ** 2))
+        gradV1 = np.vstack([string_grad_x1, string_grad_y1]).T / h1
+
+        string_grad_x2 = griddata(self.grid, self.gradX.ravel(), string + 0.5 * dt * gradV1, method='linear')
+        string_grad_y2 = griddata(self.grid, self.gradY.ravel(), string + 0.5 * dt * gradV1, method='linear')
+        h2 = np.max(np.sqrt(string_grad_x2 ** 2 + string_grad_y2 ** 2))
+        gradV2 = np.vstack([string_grad_x2, string_grad_y2]).T / h2
+
+        string_grad_x3 = griddata(self.grid, self.gradX.ravel(), string + 0.5 * dt * gradV2, method='linear')
+        string_grad_y3 = griddata(self.grid, self.gradY.ravel(), string + 0.5 * dt * gradV2, method='linear')
+        h3 = np.max(np.sqrt(string_grad_x3 ** 2 + string_grad_y3 ** 2))
+        gradV3 = np.vstack([string_grad_x3, string_grad_y3]).T / h3
+
+        string_grad_x4 = griddata(self.grid, self.gradX.ravel(), string + dt * gradV3, method='linear')
+        string_grad_y4 = griddata(self.grid, self.gradY.ravel(), string + dt * gradV3, method='linear')
+        h4 = np.max(np.sqrt(string_grad_x4 ** 2 + string_grad_y4 ** 2))
+        gradV4 = np.vstack([string_grad_x4, string_grad_y4]).T / h4
+
+        # RK4 step
+        string = string - dt/6 * (gradV1 + 2 * gradV2 + 2 * gradV3 + gradV4)
 
         return string
 
