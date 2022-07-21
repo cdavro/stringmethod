@@ -58,21 +58,25 @@ class String2D:
         self.string_traj = []
         self.mep = None
 
-    def compute_mep(self, begin, end, mid=[], spline_order=2, npts=100, integrator='forward_euler', dt=0.1, tol=None, maxsteps=100, traj_every=10):
+    def compute_mep(self, in_mep=[], begin=[], end=[], mid=[], spline_order=0, npts=100, integrator='forward_euler', dt=0.1, tol=None, maxsteps=100, traj_every=10, print_conv=False):
         """
-        Computes the minimum free energy path. The points `begin`
+        Computes the minimum free energy path. 
+        If `in_mep` is provided as a path, use it as a guess (no need for begin/end/mid)
+        The points `begin`
         and `end` and the midpoints passed through `mid` are used to generate
         an initial guess (a k-order spline which interpolates through all the points).
+        If spline_order  0, then lines connecting the segments with a number of points in-between depending on the euclidean norm between points.
         If no midpoints are defined, then the initial guess is a line connecting `begin`
         and `end`. The ends of the string are free to move, and are not fixed to `begin`
         and `end`.
 
         Args:
-            begin: Array of shape (2,) specifying starting point of the string.
-            end: Array of shape (2,) specifying end point of the string.
+            in_mep: An array of shape (npts_input,2) specifying string images (default=[]).
+            begin: Array of shape (2,) specifying starting point of the string (default=[]).
+            end: Array of shape (2,) specifying end point of the string (default=[]).
             mid: List of arrays of shape (2,) specifying points between `begin` and `end`
                 to use for generating an initial guess of the minimum energy path (default=[]).
-            spline_order: Order of spline interpolating begin, mid, and end (default=2).
+            spline_order: Order of spline interpolating begin, mid, and end (default=0) [if 0, linear segements betweens points].
             npts: Number of points between any two valuesalong the string (default=100).
             integrator: Integration scheme to use (default='forward_euler'). Options=['forward_euler','runge_kutta_4'].
             dt: Integration timestep (default=0.1).
@@ -80,26 +84,127 @@ class String2D:
                 consecutive steps (default = max{npts^-4, 10^-10}).
             maxsteps: Maximum number of steps to take (default=100).
             traj_every: Interval to store string trajectory (default=10).
+            print_conv: Print convergence values every 'traj_every' (default=False).
 
         Returns:
             mep: Array of shape (npts, 2) specifying string images along the minimum energy path between `begin` and `end`.
         """
+
         # Calculate params
         if tol is None:
             tol = max([npts ** -4, 1e-10])
 
         # Generate initial guess
-        if len(mid) > 0:
-            string_x = np.linspace(begin[0], end[0], npts)
-            xpts = [begin[0]] + [mpt[0] for mpt in mid] + [end[0]]
-            ypts = [begin[1]] + [mpt[1] for mpt in mid] + [end[1]]
-            spline = UnivariateSpline(xpts, ypts, k=spline_order)
-            string_y = spline(string_x)
-        else:
-            string_x = np.linspace(begin[0], end[0], npts)
-            string_y = np.linspace(begin[1], end[1], npts)
+        npts_in = np.asarray(in_mep).shape[0]
+        
+        # Check if a path is provided
+        if npts_in > 1 :
 
-        string = np.vstack([string_x, string_y]).T
+            # If its length is equal to the number of points requested, then done
+            if npts_in == npts:
+                string = in_mep
+                if np.asarray(string).shape[0] != npts: raise ValueError("Size of string isn't equal to number of points requested. This shouldn't happen, please report.")
+
+            # If its length is superior to the number of points requested, then cut some points (as linearly as possible, keep the first and last points)
+            elif npts_in > npts :
+                path = in_mep[np.round(np.linspace(0, npts_in-1, npts)).astype(int)]
+                string = path
+                if np.asarray(string).shape[0] != npts: raise ValueError("Size of string isn't equal to number of points requested. This shouldn't happen, please report.")
+    
+            # If its length is inferior to the number of points requested, add points alternatively at the begining and the end, then do equal arc length reparameterization
+            elif npts_in < npts :
+                string = in_mep
+                add = 0
+                while string.shape[0] != npts:
+                    if add == 0:
+                        string=np.vstack((string[0],string))
+                        add = 1
+                    else:
+                        string=np.vstack((string,string[-1]))
+                        add = 0
+                arclength = np.hstack([0, np.cumsum(np.linalg.norm(string[1:] - string[:-1], axis=1))])
+                arclength /= arclength[-1]
+                reparam_x = interp1d(arclength, string[:, 0])
+                reparam_y = interp1d(arclength, string[:, 1])
+                gamma = np.linspace(0, 1, npts)
+                string = np.vstack([reparam_x(gamma), reparam_y(gamma)]).T
+                if np.asarray(string).shape[0] != npts: raise ValueError("Size of string isn't equal to number of points requested. This shouldn't happen, please report.")
+
+        # If no path is provided, check if the begin and end are non-zero
+        elif (len(begin) > 0) and (len(end) > 0):
+
+            # If no midpoints, just linear between begin and end
+            if len(mid) == 0:
+                string_x = np.linspace(begin[0], end[0], npts)
+                string_y = np.linspace(begin[1], end[1], npts)
+                string = np.vstack([string_x, string_y]).T
+                if np.asarray(string).shape[0] != npts: raise ValueError("Size of string isn't equal to number of points requested. This shouldn't happen, please report.")
+
+            # If midpoints
+            else:
+            
+                # If linear is requested
+                if spline_order == 0:
+                    
+                    # If the number of points requested for the string is less than the number of points in input (begin/mid/end)
+                    if (  npts < (len(mid) + 2) ) :
+                        raise ValueError("The total number of points can't be lower than initial number of points provided (beg/mid/end)")
+                    
+                    # If the number of points requested for the string is equal to the number of points in input (begin/mid/end)
+                    elif (len(mid) + 2) == npts:
+                        string_x = np.hstack((begin[0], [mid[n][0] for n in range(0,len(mid))], end[0]))
+                        string_y = np.hstack((begin[1], [mid[n][1] for n in range(0,len(mid))], end[1]))
+
+                    # Calculate the (euclidean) norm between points, distribute points per segments function of length (longer, more points)
+                    elif len(mid) >= 1:
+                        npts_toadd = npts - ( len(mid) + 2 )
+
+                        begin=np.array([begin])
+                        end=np.array([end])
+                        mid=np.array(mid)
+
+                        in_path=np.vstack((begin, np.array([mid[n] for n in range(0,mid.shape[0])]), end))
+
+                        segment_count =  ( mid.shape[0] + 2 ) - 1
+                        segment_lenght=np.zeros(segment_count)
+                        for n in range(0,segment_count):
+                            segment_lenght[n] = np.linalg.norm(in_path[n+1,:]-in_path[n,:])
+
+                        segment_n_lenght=segment_lenght/np.sum(segment_lenght)
+                        segment_npts=np.round((npts_toadd*segment_n_lenght),0).astype(int)
+
+                        # Because of rounding, points might be under or over
+                        max_count,min_count=1,0
+                        # If under, distribute points to larger distances (one point to the largest, second point to the second largest, etc..)  
+                        while mid.shape[0] + 2 + np.sum(segment_npts) < npts:
+                            segment_npts[np.where(np.sort(segment_npts)[-max_count])] += 1
+                            max_count += 1
+                        # If over, distribute points to smaller distances (minus one point to the smallest, minus second point to the second smallest, etc..) 
+                        while mid.shape[0] + 2 + np.sum(segment_npts) > npts:
+                            segment_npts[np.where(np.sort(segment_npts)[min_count])] -= 1
+                            min_count += 1
+
+                        string_x = np.linspace(in_path[0][0], in_path[1][0], segment_npts[0] + 2)
+                        string_y = np.linspace(in_path[0][1], in_path[1][1], segment_npts[0] + 2)
+                        for n in range(1,segment_count):
+                            string_x = np.hstack((string_x, np.linspace(in_path[n][0],in_path[n+1][0], segment_npts[n]+ 2)[1:]))
+                            string_y = np.hstack((string_y, np.linspace(in_path[n][1],in_path[n+1][1], segment_npts[n]+ 2)[1:]))
+
+                    string = np.vstack([string_x, string_y]).T
+                    if np.asarray(string).shape[0] != npts: raise ValueError("Size of string isn't equal to number of points requested. This shouldn't happen, please report.")
+
+                # If spline is requested
+                else:
+                    if len(mid) > 0:
+                        string_x = np.linspace(begin[0], end[0], npts)
+                        xpts = [begin[0]] + [mpt[0] for mpt in mid] + [end[0]]
+                        ypts = [begin[1]] + [mpt[1] for mpt in mid] + [end[1]]
+                        spline = UnivariateSpline(xpts, ypts, k=spline_order)
+                        string_y = spline(string_x)
+                    string = np.vstack([string_x, string_y]).T
+                    if np.asarray(string).shape[0] != npts: raise ValueError("Size of string isn't equal to number of points requested. This shouldn't happen, please report.")
+        else:
+            raise ValueError("If no path, it must have no-empty begin/end.")
 
         # Store initial guess
         self.string_traj = []
@@ -131,7 +236,8 @@ class String2D:
             if tstep % traj_every == 0:
                 self.string_traj.append(string)
                 # Print convergence
-                print("Change in string: {:.10f}".format(np.sqrt(np.mean((string - old_string) ** 2))))
+                if print_conv == True:
+                    print("Change in string: {:.10f}".format(np.sqrt(np.mean((string - old_string) ** 2))))
 
             # Test for convergence
             if np.sqrt(np.mean((string - old_string) ** 2)) < tol:
