@@ -263,9 +263,10 @@ class String2D:
         h = np.max(np.sqrt(string_grad_x ** 2 + string_grad_y ** 2))
 
         # Euler step
-        string = string - dt * np.vstack([string_grad_x, string_grad_y]).T / h
+        newstring = string - dt * np.vstack([string_grad_x, string_grad_y]).T / h
 
-        return string
+        return newstring
+
     def step_RK4(self, string, dt):
         """
         Evolves string images in time in response to forces calculated from the energy landscape.
@@ -277,31 +278,28 @@ class String2D:
         Returns:
             newstring: Array of shape (npts, 2) specifying string images after a timestep.
         """
-        # Correct?
-        string_grad_x1 = griddata(self.grid, self.gradX.ravel(), string, method='linear')
-        string_grad_y1 = griddata(self.grid, self.gradY.ravel(), string, method='linear')
-        h1 = np.max(np.sqrt(string_grad_x1 ** 2 + string_grad_y1 ** 2))
-        gradV1 = np.vstack([string_grad_x1, string_grad_y1]).T / h1
+        
+        # Compute gradients at string points
+        string_grad_x = griddata(self.grid, self.gradX.ravel(), string, method='linear')
+        string_grad_y = griddata(self.grid, self.gradY.ravel(), string, method='linear')
+        grad_norm = np.sqrt(string_grad_x ** 2 + string_grad_y ** 2)
+        grad_norm[grad_norm == 0] = 1  # Avoid division by zero
 
-        string_grad_x2 = griddata(self.grid, self.gradX.ravel(), string + 0.5 * dt * gradV1, method='linear')
-        string_grad_y2 = griddata(self.grid, self.gradY.ravel(), string + 0.5 * dt * gradV1, method='linear')
-        h2 = np.max(np.sqrt(string_grad_x2 ** 2 + string_grad_y2 ** 2))
-        gradV2 = np.vstack([string_grad_x2, string_grad_y2]).T / h2
+        # Define the derivative function for the Runge-Kutta method
+        def f(t, y):
+            x, y = y.T
+            grad_x = np.interp(x, self.grid[:, :, 0].ravel(), self.gradX.ravel())
+            grad_y = np.interp(y, self.grid[:, :, 1].ravel(), self.gradY.ravel())
+            return np.vstack([grad_x / grad_norm, grad_y / grad_norm]).T
 
-        string_grad_x3 = griddata(self.grid, self.gradX.ravel(), string + 0.5 * dt * gradV2, method='linear')
-        string_grad_y3 = griddata(self.grid, self.gradY.ravel(), string + 0.5 * dt * gradV2, method='linear')
-        h3 = np.max(np.sqrt(string_grad_x3 ** 2 + string_grad_y3 ** 2))
-        gradV3 = np.vstack([string_grad_x3, string_grad_y3]).T / h3
+        # Use the Runge-Kutta method to update the positions of the string points
+        k1 = f(0, string)
+        k2 = f(dt/2, string + dt/2 * k1)
+        k3 = f(dt/2, string + dt/2 * k2)
+        k4 = f(dt, string + dt * k3)
+        newstring = string + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
 
-        string_grad_x4 = griddata(self.grid, self.gradX.ravel(), string + dt * gradV3, method='linear')
-        string_grad_y4 = griddata(self.grid, self.gradY.ravel(), string + dt * gradV3, method='linear')
-        h4 = np.max(np.sqrt(string_grad_x4 ** 2 + string_grad_y4 ** 2))
-        gradV4 = np.vstack([string_grad_x4, string_grad_y4]).T / h4
-
-        # RK4 step
-        string = string - dt/6 * (gradV1 + 2 * gradV2 + 2 * gradV3 + gradV4)
-
-        return string
+        return newstring
 
     def get_mep_energy_profile(self):
         energy_mep = griddata(self.grid, self.V.ravel(), self.mep, method='linear')
